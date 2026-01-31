@@ -156,4 +156,5 @@ fi
 # Run OpenClaw
 # ----------------------------
 ulimit -n 65535
+echo "🔧 Current ulimit is: $(ulimit -n)"
 exec openclaw gateway run

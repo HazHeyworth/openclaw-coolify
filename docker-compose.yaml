@@ -64,6 +64,8 @@ services:
       OPENCLAW_AUTO_BOOTSTRAP: "1"
       OPENCLAW_PRINT_ACCESS: "1"
       GATEWAY_TRUSTED_PROXIES: '*'
+      # Fix for EMFILE/Inotify issues in Docker
+      CHOKIDAR_USEPOLLING: "true"
       # Public URL Access
 
       CF_TUNNEL_TOKEN: ${CF_TUNNEL_TOKEN}

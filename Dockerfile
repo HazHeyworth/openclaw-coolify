@@ -1,23 +1,25 @@
-FROM node:lts-bookworm-slim
+# syntax=docker/dockerfile:1
 
-# Prevent interactive prompts during package installation
+########################################
+# Stage 1: Base System
+########################################
+FROM node:20-bookworm-slim AS base
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_ROOT_USER_ACTION=ignore
 
-# Install Core & Power Tools + Docker CLI (client only)
+# Core packages + build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     git \
     build-essential \
-    software-properties-common \
     python3 \
     python3-pip \
     python3-venv \
     jq \
     lsof \
     openssl \
-    ca-certificates \
     ca-certificates \
     gnupg \
     ripgrep fd-find fzf bat \
@@ -29,114 +31,75 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sqlite3 \
     pass \
     chromium \
-    chromium-driver \
-    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-RUN systemctl mask polkit.service || true
-# Install Docker CE CLI (Latest) to support API 1.44+
-RUN install -m 0755 -d /etc/apt/keyrings && \
-    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
-    chmod a+r /etc/apt/keyrings/docker.asc && \
-    echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
-    $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-    tee /etc/apt/sources.list.d/docker.list > /dev/null && \
-    apt-get update && \
-    apt-get install -y docker-ce-cli && \
-    rm -rf /var/lib/apt/lists/*
+# 🔥 CRITICAL FIX (native modules)
+ENV PYTHON=/usr/bin/python3 \
+    npm_config_python=/usr/bin/python3
 
+RUN ln -sf /usr/bin/python3 /usr/bin/python && \
+    npm install -g node-gyp
 
-# Install Go (Latest)
-RUN curl -L "https://go.dev/dl/go1.23.4.linux-amd64.tar.gz" -o go.tar.gz && \
-    tar -C /usr/local -xzf go.tar.gz && \
-    rm go.tar.gz
-ENV PATH="/usr/local/go/bin:${PATH}"
+########################################
+# Stage 2: Runtimes
+########################################
+FROM base AS runtimes
 
-# Install Cloudflare Tunnel (cloudflared)
-RUN ARCH=$(dpkg --print-architecture) && \
-    curl -L --output cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}.deb" && \
-    dpkg -i cloudflared.deb && \
-    rm cloudflared.deb
+ENV BUN_INSTALL="/data/.bun" \
+    PATH="/usr/local/go/bin:/data/.bun/bin:/data/.bun/install/global/bin:$PATH"
 
-# Install GitHub CLI (gh)
-RUN mkdir -p -m 755 /etc/apt/keyrings && \
-    wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
-    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
-    apt-get update && \
-    apt-get install -y gh && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install uv (Python tool manager)
-ENV UV_INSTALL_DIR="/usr/local/bin"
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install Bun
-ENV BUN_INSTALL_NODE=0
-ENV BUN_INSTALL="/root/.bun"
-RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL https://bun.sh/install | bash
-ENV PATH="/root/.bun/bin:/root/.bun/install/global/bin:${PATH}"
-
-# Install Vercel, Marp, QMD
-RUN bun install -g vercel @marp-team/marp-cli https://github.com/tobi/qmd && hash -r
-
-# Configure QMD Persistence
-ENV XDG_CACHE_HOME="/root/.openclaw/cache"
+# Install Bun (allow bun to manage compatible node)
+RUN curl -fsSL https://bun.sh/install | bash
 
 # Python tools
 RUN pip3 install ipython csvkit openpyxl python-docx pypdf botasaurus browser-use playwright --break-system-packages && \
     playwright install-deps
 
+ENV XDG_CACHE_HOME="/data/.cache"
 
+########################################
+# Stage 3: Dependencies
+########################################
+FROM runtimes AS dependencies
 
-# Debian aliases
-RUN ln -s /usr/bin/fdfind /usr/bin/fd || true && \
-    ln -s /usr/bin/batcat /usr/bin/bat || true
-
-WORKDIR /app
-
-# ✅ FINAL PATH (important)
-ENV PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/root/.local/bin:/root/.npm-global/bin:/root/.bun/bin:/root/.bun/install/global/bin:/root/.claude/bin:/root/.kimi/bin:/root/go/bin"
-
-# OpenClaw install
 ARG OPENCLAW_BETA=false
 ENV OPENCLAW_BETA=${OPENCLAW_BETA} \
     OPENCLAW_NO_ONBOARD=1 \
     NPM_CONFIG_UNSAFE_PERM=true
 
-RUN if [ "$OPENCLAW_BETA" = "true" ]; then \
+# Bun global installs (with cache)
+RUN --mount=type=cache,target=/data/.bun/install/cache \
+    bun install -g vercel @marp-team/marp-cli https://github.com/tobi/qmd && \
+    bun pm -g untrusted && \
+    bun install -g @openai/codex @google/gemini-cli opencode-ai @steipete/summarize @hyperbrowser/agent clawhub
+
+# OpenClaw (npm install)
+RUN --mount=type=cache,target=/data/.npm \
+    if [ "$OPENCLAW_BETA" = "true" ]; then \
     npm install -g openclaw@beta; \
     else \
     npm install -g openclaw; \
     fi && \
-    if command -v openclaw >/dev/null 2>&1; then \
-    echo "✅ openclaw binary found"; \
-    else \
-    echo "❌ OpenClaw install failed (binary 'openclaw' not found)"; \
-    exit 1; \
-    fi
+    command -v openclaw
 
-RUN bun pm -g untrusted
-# AI Tool Suite & ClawHub
-RUN bun install -g @openai/codex @google/gemini-cli opencode-ai @steipete/summarize @hyperbrowser/agent clawhub && \
-    curl -fsSL https://claude.ai/install.sh | bash && \
+# Claude + Kimi
+RUN curl -fsSL https://claude.ai/install.sh | bash && \
     curl -L https://code.kimi.com/install.sh | bash
 
+########################################
+# Stage 4: Final
+########################################
+FROM dependencies AS final
 
-
-
-# Copy everything (obeying .dockerignore)
+WORKDIR /app
 COPY . .
 
-# Specialized symlinks and permissions
-RUN ln -sf /root/.claude/bin/claude /usr/local/bin/claude || true && \
-    ln -sf /root/.kimi/bin/kimi /usr/local/bin/kimi || true && \
-    ln -sf /app/scripts/openclaw-approve.sh /usr/local/bin/openclaw-approve && \
-    ln -sf /app/scripts/openclaw-approve.sh /usr/local/bin/openclaw-approve && \
-    chmod +x /app/scripts/*.sh /usr/local/bin/openclaw-approve
+# Symlinks
+RUN ln -sf /data/.claude/bin/claude /usr/local/bin/claude || true && \
+    ln -sf /data/.kimi/bin/kimi /usr/local/bin/kimi || true && \
+    chmod +x /app/scripts/*.sh
 
+ENV PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/data/.bun/bin:/data/.bun/install/global/bin:/data/.claude/bin:/data/.kimi/bin"
 
 EXPOSE 18789
 CMD ["bash", "/app/scripts/bootstrap.sh"]

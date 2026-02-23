@@ -10,6 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Core packages + build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    sudo \
     curl \
     wget \
     git \
@@ -90,9 +92,9 @@ RUN curl -L https://github.com/azlux/uv/releases/latest/download/uv-linux-x64 -o
     chmod +x /usr/local/bin/uv
 
 # Claude + Kimi
-RUN curl -fsSL https://claude.ai/install.sh | bash && \
-    curl -L https://code.kimi.com/install.sh | bash && \
-    command -v uv
+# RUN curl -fsSL https://claude.ai/install.sh | bash && \
+  #  curl -L https://code.kimi.com/install.sh | bash && \
+   # command -v uv
 
 # Make sure uv and other local bins are available
 ENV PATH="/root/.local/bin:${PATH}"
